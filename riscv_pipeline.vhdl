@@ -213,6 +213,7 @@ architecture Behavioral of riscv_pipeline is
             ex_mem_npc : inout  STD_LOGIC_VECTOR(31 downto 0);
             ex_mem_alu_result : inout  STD_LOGIC_VECTOR(31 downto 0);
             ex_mem_alu_op : inout  STD_LOGIC_VECTOR(3 downto 0);
+            ex_mem_imm : inout  STD_LOGIC_VECTOR(31 downto 0);
             ex_mem_instr : inout  STD_LOGIC_VECTOR(31 downto 0);
             ex_mem_reg2_data : inout  STD_LOGIC_VECTOR(31 downto 0);
             ex_mem_rs1 : inout  STD_LOGIC_VECTOR(4 downto 0);
@@ -237,7 +238,8 @@ architecture Behavioral of riscv_pipeline is
             mem_wb_reg2_data : out STD_LOGIC_VECTOR(31 downto 0);
             mem_wb_rs1 : out STD_LOGIC_VECTOR(4 downto 0);
             mem_wb_rs2 : out STD_LOGIC_VECTOR(4 downto 0);
-            mem_wb_rd : out STD_LOGIC_VECTOR(4 downto 0)
+            mem_wb_rd : out STD_LOGIC_VECTOR(4 downto 0);
+            --mem_wb_mem_data : out STD_LOGIC_VECTOR(31 downto 0) might not need, weird thing going on here
             
         );
     end component;
@@ -324,6 +326,7 @@ begin
             ex_mem_npc => ex_mem_npc,
             ex_mem_alu_result => ex_mem_alu_result,
             ex_mem_alu_op => ex_mem_alu_op,
+            ex_mem_imm => ex_mem_imm,
             ex_mem_instr => ex_mem_instr,
             ex_mem_reg2_data => ex_mem_reg2_data,
             ex_mem_rs1 => ex_mem_rs1,
@@ -351,6 +354,8 @@ begin
             mem_wb_rd => mem_wb_rd
         );
     
+
+    -------------------------- IF state hardware ---------------------------------------------
     -- Instruction memory
     pc_byte_not_word <= "00" & pc(31 downto 2);  -- divide by 4 by shifting left 2, since byte addressable, not word addressable
     instr_mem_inst: instr_mem
@@ -358,10 +363,12 @@ begin
             addr  => pc_byte_not_word,
             instr => instr
         );   
+    
     -- IF/ID pipeline registers
     if_id_instr <= instr;
     if_id_npc    <= NPC;
 
+    -------------------------- ID state hardware ---------------------------------------------
     -- Decode instruction fields
     if_id_rs1 <= if_id_instr(19 downto 15);
     if_id_rs2 <= if_id_instr(24 downto 20);
@@ -391,14 +398,18 @@ begin
     -- ALU control unit
     alu_control_inst: alu_control
             port map (
-                funct3 => if_id_instr(<define bit> downto<define bit>),
-                funct7 => (<define bit> downto<define bit>),
+                funct3 => if_id_instr(14 downto 12),
+                funct7 => if_id_instr(31 downto 25),
                 alu_op => if_id_alu_op
             );	
+
 --------------------------------------------------------------------------------
     -- ID units
     -- Register file [used in ID and WB stages]
-    reg_write_chip <= <what control signal?>;
+    
+    -- VERY NOT SURE ABOUT THIS
+    reg_write_chip <= '1' when (mem_wb_reg_write = '1') else '0';
+    
     reg_file_inst: reg_file
         port map (
         clk       => clk,
@@ -422,14 +433,15 @@ begin
 
                 
     -- ID/EX pipeline registers
+    -- occurs within the pipeline_registers component file on each clock rising edge
 
------------------------------------------------------------
-    -- EX units
+    -------------------------- EX state hardware ---------------------------------------------
+
     alu_input_a <= id_ex_reg1_data;  
                        
     -- mux to select alu input B
-    alu_input_b <= <which_register> when <which_control_signal> else
-                   <which_register>;
+    alu_input_b <= id_ex_reg1_data when (id_ex_alu_src = '0') else
+                   id_ex_imm;
     -- ALU
     alu_inst: alu
         port map (
@@ -441,9 +453,9 @@ begin
         id_ex_alu_result <= alu_result;
 
     -- EX/MEM pipeline register
+    -- occurs within the pipeline_registers component file on each clock rising edge
 
-----------------------------------------------------------------------------------------
-    --  MEM units
+    -------------------------- MEM state hardware ---------------------------------------------
     
     -- Data memory
     data_memory_byte_not_word <= "00" & ex_mem_alu_result(31 downto 2);  -- divide by 4 by shifting left 2, since byte addressable, not word addressable
@@ -453,26 +465,25 @@ begin
         data_in   => ex_mem_reg2_data,
         data_out  => mem_data,
         mem_read  => ex_mem_mem_read,
-        mem_write => <what control signal?>
+        mem_write => ex_mem_mem_write -- no longer need mem_write_chip
     );
-    mem_wb_mem_data <= mem_data; 
+    mem_wb_mem_data <= mem_data;  -- I don't think I currently am including this lol
 
     -- Comparator 
-    not_equal_flag <= '1' when <what do we compare to decide if we should branch?> else '0';
+    not_equal_flag <= '1' when (ex_mem_reg1_data /= ex_mem_reg2_data) else '0';
     
-    next_pc <= <math based on NPC and imm> when (<what control signals?>) else -- branch case
-               <math based on NPC and imm> when (<what control signals?>) else  -- jump case
-               NPC when (<what control signals? are any needed?>); -- note: this happens during IF !!! 1st two during MEM
+    next_pc <= std_logic_vector(signed(ex_mem_npc) + shift_left(signed(ex_mem_imm), 1) when (ex_mem_branch = '1' and not_equal_flag = '1') else -- branch case
+               std_logic_vector(signed(ex_mem_npc) + signed(ex_mem_imm)) when (ex_mem_jump = '1') else  -- jump case
+               NPC; -- note: this happens during IF !!! 1st two during MEM
                       
     -- MEM/WB pipeline register
 
 
-------------------------------------------------------------------------------------------
-    -- WB Units
+    -------------------------- WB state hardware ---------------------------------------------
     
     -- MUX to write back to register file
-    wb_data <= mem_wb_mem_data when (<what control signals?>) else 
-               x"10000000" when (<what control signals?>) else  -- hack for custom load_addr instruction
-               mem_wb_alu_result when (<what control signals?>);      
+    wb_data <= mem_wb_mem_data when (mem_wb_mem_read = '1') else 
+               x"10000000" when (mem_wb_load_addr = '1') else  -- hack for custom load_addr instruction
+               mem_wb_alu_result when (mem_wb_reg_write = '1');      
    
 end Behavioral;
