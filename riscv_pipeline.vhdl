@@ -192,7 +192,7 @@ architecture Behavioral of riscv_pipeline is
             id_ex_reg1_data  : inout  STD_LOGIC_VECTOR(31 downto 0);
             -- <add other id_ex registers>
             id_ex_npc : inout  STD_LOGIC_VECTOR(31 downto 0);
-            id_ex_alu_result : inout  STD_LOGIC_VECTOR(31 downto 0);
+            id_ex_alu_result : in  STD_LOGIC_VECTOR(31 downto 0);
             id_ex_alu_op : inout  STD_LOGIC_VECTOR(3 downto 0);
             id_ex_imm : inout  STD_LOGIC_VECTOR(31 downto 0);
             id_ex_reg2_data : inout  STD_LOGIC_VECTOR(31 downto 0);
@@ -238,7 +238,7 @@ architecture Behavioral of riscv_pipeline is
             mem_wb_reg2_data : out STD_LOGIC_VECTOR(31 downto 0);
             mem_wb_rs1 : out STD_LOGIC_VECTOR(4 downto 0);
             mem_wb_rs2 : out STD_LOGIC_VECTOR(4 downto 0);
-            mem_wb_rd : out STD_LOGIC_VECTOR(4 downto 0);
+            mem_wb_rd : out STD_LOGIC_VECTOR(4 downto 0)
             --mem_wb_mem_data : out STD_LOGIC_VECTOR(31 downto 0) might not need, weird thing going on here
             
         );
@@ -408,12 +408,12 @@ begin
     -- Register file [used in ID and WB stages]
     
     -- VERY NOT SURE ABOUT THIS
-    reg_write_chip <= '1' when (mem_wb_reg_write = '1') else '0';
+    -- reg_write_chip <= '1' when (mem_wb_reg_write = '1') else '0';
     
     reg_file_inst: reg_file
         port map (
         clk       => clk,
-        reg_write => reg_write_chip,
+        reg_write => mem_wb_reg_write,
         rs1       => if_id_rs1,
         rs2       => if_id_rs2,
         rd        => mem_wb_rd,
@@ -440,7 +440,7 @@ begin
     alu_input_a <= id_ex_reg1_data;  
                        
     -- mux to select alu input B
-    alu_input_b <= id_ex_reg1_data when (id_ex_alu_src = '0') else
+    alu_input_b <= id_ex_reg2_data when (id_ex_alu_src = '0') else
                    id_ex_imm;
     -- ALU
     alu_inst: alu
@@ -472,7 +472,7 @@ begin
     -- Comparator 
     not_equal_flag <= '1' when (ex_mem_reg1_data /= ex_mem_reg2_data) else '0';
     
-    next_pc <= std_logic_vector(signed(ex_mem_npc) + shift_left(signed(ex_mem_imm), 1) when (ex_mem_branch = '1' and not_equal_flag = '1') else -- branch case
+    next_pc <= std_logic_vector(signed(ex_mem_npc) + shift_left(signed(ex_mem_imm), 1)) when (ex_mem_branch = '1' and not_equal_flag = '1') else -- branch case
                std_logic_vector(signed(ex_mem_npc) + signed(ex_mem_imm)) when (ex_mem_jump = '1') else  -- jump case
                NPC; -- note: this happens during IF !!! 1st two during MEM
                       
@@ -484,6 +484,7 @@ begin
     -- MUX to write back to register file
     wb_data <= mem_wb_mem_data when (mem_wb_mem_read = '1') else 
                x"10000000" when (mem_wb_load_addr = '1') else  -- hack for custom load_addr instruction
-               mem_wb_alu_result when (mem_wb_reg_write = '1');      
+               mem_wb_alu_result when (mem_wb_reg_write = '1') else
+               wb_data;
    
 end Behavioral;
